@@ -1,0 +1,104 @@
+package io.openchaos.driver.redis;
+
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import io.lettuce.core.ReadFrom;
+import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisURI;
+import io.lettuce.core.codec.StringCodec;
+import io.lettuce.core.masterreplica.MasterReplica;
+import io.lettuce.core.masterreplica.StatefulRedisMasterReplicaConnection;
+import io.openchaos.driver.ChaosNode;
+import io.openchaos.driver.PreChaosNode;
+import io.openchaos.driver.cache.CacheChaosClient;
+import io.openchaos.driver.cache.CacheChaosDriver;
+import io.openchaos.driver.redis.config.RedisConfig;
+import io.openchaos.driver.redis.config.RedisClientConfig;
+
+import java.io.File;
+import java.io.IOException;
+import java.time.Duration;
+import java.util.List;
+
+public class RedisDriver implements CacheChaosDriver {
+
+    private List<String> nodes;
+    private List<String> preNodes;
+    private RedisConfig redisConfig;
+    private RedisClientConfig redisClientConfig;
+    private int port;
+    private String host;
+    private String masterId = "mymaster";
+    private static final ObjectMapper MAPPER = new ObjectMapper(new YAMLFactory())
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
+    private static RedisConfig readConfigForRedis(File configurationFile) throws IOException {
+        return MAPPER.readValue(configurationFile, RedisConfig.class);
+    }
+
+    private static RedisClientConfig readConfigForNode(File configurationFile) throws IOException {
+        return MAPPER.readValue(configurationFile, RedisClientConfig.class);
+    }
+
+    @Override
+    public void initialize(File configurationFile, List<String> nodes) throws IOException {
+        this.redisConfig = readConfigForRedis(configurationFile);
+        this.redisClientConfig = readConfigForNode(configurationFile);
+        this.nodes = nodes;
+        this.host = redisClientConfig.host;
+        this.port = redisClientConfig.port;
+        if (redisClientConfig.masterId != null && !redisClientConfig.masterId.isEmpty()) {
+            this.masterId = redisClientConfig.masterId;
+        }
+    }
+
+    @Override
+    public void shutdown() {
+
+    }
+
+    @Override
+    public ChaosNode createChaosNode(String node, List<String> nodes) {
+        this.nodes = nodes;
+        return new RedisNode(node, nodes, redisConfig);
+    }
+
+    @Override
+    public PreChaosNode createPreChaosNode(String node, List<String> nodes)  {
+        preNodes = nodes;
+        return new RedisSentinelNode(node, nodes, redisConfig);
+    }
+
+
+
+    @Override
+    public String getAdd() {
+        return host + ":" + port;
+    }
+
+    @Override
+    public String getMasterId() {
+        return masterId;
+    }
+
+    @Override
+    public CacheChaosClient createCacheChaosClient() {
+
+        RedisURI sentinelUri = RedisURI.Builder.sentinel(host, port, masterId ).build();
+        //sentinelUri.setPassword("*******".toCharArray());
+        sentinelUri.setTimeout(Duration.ofSeconds(5000));
+        sentinelUri.setDatabase(0);
+        RedisClient redisClient = RedisClient.create();
+        StatefulRedisMasterReplicaConnection<String, String> connection= MasterReplica.connect(redisClient, StringCodec.UTF8, sentinelUri);
+        connection.setReadFrom(ReadFrom.REPLICA);
+//        RedisSentinelAsyncCommandsImpl a = new RedisSentinelAsyncCommandsImpl(connection,StringCodec.UTF8);
+//        RedisFuture master =  a.getMasterAddrByName(sentinelUri.getSentinelMasterId());
+//        RedisSentinelCommands<String, String> sentinel = redisClient.connectSentinel(sentinelUri).sync();
+//        InetSocketAddress socketAddress = (InetSocketAddress) sentinel.getMasterAddrByName(sentinelUri.getSentinelMasterId());
+//        String masterIP = socketAddress.getHostName();
+        return new RedisChaosClient(redisClient, connection);
+    }
+
+
+}
